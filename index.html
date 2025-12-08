@@ -24,6 +24,11 @@
         ::-webkit-scrollbar-track { background: #f1f5f9; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
         ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+        
+        /* Fade transition for health tips */
+        .fade-text { transition: opacity 0.8s ease-in-out; }
+        .opacity-0 { opacity: 0; }
+        .opacity-100 { opacity: 1; }
     </style>
 </head>
 <body class="bg-stone-50 min-h-screen text-slate-800">
@@ -57,7 +62,7 @@
                 <div class="bg-white rounded-3xl shadow-xl shadow-emerald-900/5 p-8 text-center border border-emerald-50 relative overflow-hidden group">
                     <div id="status-border" class="absolute top-0 left-0 w-full h-2 transition-colors duration-500 bg-emerald-500"></div>
 
-                    <!-- Doctor Info (New Addition) -->
+                    <!-- Doctor Info -->
                     <div class="mb-6 border-b border-slate-100 pb-4">
                         <h2 class="text-3xl font-bold text-slate-800 mb-1">二診</h2>
                         <p class="text-xl text-emerald-700 font-medium">林佑彥醫師</p>
@@ -81,7 +86,7 @@
                     </div>
                 </div>
 
-                <!-- Health Tip -->
+                <!-- Health Tip (Randomized) -->
                 <div class="bg-gradient-to-br from-white to-stone-50 rounded-2xl p-6 border border-stone-200 shadow-md relative mt-2">
                     <div class="absolute -top-3 left-6 bg-emerald-700 text-white px-3 py-1 rounded-full text-xs font-bold shadow-sm flex items-center gap-1">
                         <i data-lucide="message-circle" width="12"></i>
@@ -92,7 +97,8 @@
                         <div class="mb-3 flex justify-center text-emerald-600 opacity-20">
                             <i data-lucide="heart" width="40" height="40"></i>
                         </div>
-                        <p id="display-health-tip" class="text-stone-700 text-lg font-medium leading-relaxed font-serif">
+                        <!-- Added fade-text class for animation -->
+                        <p id="display-health-tip" class="text-stone-700 text-lg font-medium leading-relaxed font-serif fade-text opacity-100 min-h-[3.5rem] flex items-center justify-center">
                             “靜心守神，感受呼吸的流動”
                         </p>
                         <div class="mt-4 flex justify-center gap-1">
@@ -235,16 +241,16 @@
                 <!-- HEALTH TIP INPUT -->
                 <div class="bg-indigo-50 p-4 rounded-xl border border-indigo-100">
                     <p class="text-indigo-800 text-xs font-bold mb-2 flex items-center gap-1">
-                        <i data-lucide="heart" width="12"></i> 衛教短語 / 醫師心法
+                        <i data-lucide="heart" width="12"></i> 衛教短語 (即時發送/手動覆蓋)
                     </p>
                     <div class="flex gap-2 mb-3">
-                        <input id="input-health-tip" type="text" class="flex-1 p-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-700">
+                        <input id="input-health-tip" type="text" class="flex-1 p-2 text-sm border border-indigo-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-slate-700" placeholder="輸入後點發布，會暫時覆蓋隨機輪播">
                         <button id="btn-update-tip" class="btn-press bg-indigo-600 text-white px-3 py-2 rounded-lg text-sm font-bold shadow-sm hover:bg-indigo-700">
                             發布
                         </button>
                     </div>
                     
-                    <p class="text-indigo-400 text-[10px] mb-1 pl-1">快速選取</p>
+                    <p class="text-indigo-400 text-[10px] mb-1 pl-1">快速選取 (用於管理端預覽)</p>
                     <div id="health-presets" class="flex flex-wrap gap-2 h-32 overflow-y-auto content-start"></div>
                 </div>
             </div>
@@ -274,15 +280,13 @@
         // ⚠️ 重要：請將下方的 config 替換成您在 Firebase Console 複製的內容
         // =========================================================
         const firebaseConfig = {
-            // 在這裡貼上您的 Firebase 設定
-            // apiKey: "...",
-  apiKey: "AIzaSyCKRc6EagkeTr5FeR1bWj2II6uzXtCaAeo",
-  authDomain: "clinic-schedule-644e7.firebaseapp.com",
-  projectId: "clinic-schedule-644e7",
-  storageBucket: "clinic-schedule-644e7.firebasestorage.app",
-  messagingSenderId: "545585112988",
-  appId: "1:545585112988:web:71771a87f8da1800864a59",
-  measurementId: "G-Z76YV4DK3F"
+            apiKey: "AIzaSyCKRc6EagkeTr5FeR1bWj2II6uzXtCaAeo",
+            authDomain: "clinic-schedule-644e7.firebaseapp.com",
+            projectId: "clinic-schedule-644e7",
+            storageBucket: "clinic-schedule-644e7.firebasestorage.app",
+            messagingSenderId: "545585112988",
+            appId: "1:545585112988:web:71771a87f8da1800864a59",
+            measurementId: "G-Z76YV4DK3F"
         };
 
         const app = initializeApp(firebaseConfig);
@@ -304,6 +308,10 @@
             updatedAt: new Date().toISOString()
         };
 
+        // --- Random Rotation State ---
+        let rotationInterval = null;
+        let lastAdminUpdateTimestamp = 0; // To pause rotation on manual update
+
         const dayNames = ["週日", "週一", "週二", "週三", "週四", "週五", "週六"];
         
         // Default Schedule
@@ -319,13 +327,19 @@
         
         let activeScheduleRules = JSON.parse(JSON.stringify(defaultScheduleRules));
 
+        // Expanded Presets based on Dr. Lin's philosophy
         const healthPresets = [
+            "守神是修復的基礎，減少不必要的耗神",
             "放鬆心情，閉目養神，啟動自癒力",
             "深呼吸，釋放肩頸與情緒的壓力",
             "心結會阻礙能量，請試著覺察情緒",
-            "眼部保養：多看遠方綠色，減少耗神",
             "睡眠困擾常源於控制慾，試著放手",
             "情緒與臟腑相連，接納情緒即是養生",
+            "眼疾與情緒相關，多看綠色，釋放焦慮",
+            "正視問題，釋放壓力，促進自我成長",
+            "靜心守神，感受呼吸的流動",
+            "疾病常與心神失衡有關，請放慢腳步",
+            "眼部保養：多看遠方綠色，減少耗神",
             "讓眼睛在舒適光線中呼吸，才能慢慢找回清明",
             "讓身心都有歸位的地方，神自然會回來。",
             "若神無處安放，藥再好也難留住神光。",
@@ -401,10 +415,42 @@
             return null; // Open / No rule active
         }
 
+        // --- Rotation Logic ---
+        function startTipRotation() {
+            if (rotationInterval) clearInterval(rotationInterval);
+            
+            // Initial call if empty
+            if(!els.healthTip.textContent.trim()) {
+                 updateTipDisplay(healthPresets[Math.floor(Math.random() * healthPresets.length)]);
+            }
+
+            rotationInterval = setInterval(() => {
+                // If admin updated recently (within 30 seconds), pause rotation
+                if (Date.now() - lastAdminUpdateTimestamp < 30000) return;
+
+                const randomTip = healthPresets[Math.floor(Math.random() * healthPresets.length)];
+                updateTipDisplay(randomTip);
+            }, 10000); // Rotate every 10 seconds
+        }
+
+        function updateTipDisplay(text) {
+            // Fade out
+            els.healthTip.classList.remove('opacity-100');
+            els.healthTip.classList.add('opacity-0');
+
+            setTimeout(() => {
+                els.healthTip.textContent = `“${text}”`;
+                // Fade in
+                els.healthTip.classList.remove('opacity-0');
+                els.healthTip.classList.add('opacity-100');
+            }, 500); // Wait for CSS transition
+        }
+
         // --- Initialization ---
         async function init() {
             lucide.createIcons();
             renderPresets();
+            startTipRotation(); // Start the rotation locally
             
             try {
                await signInAnonymously(auth);
@@ -462,6 +508,13 @@
 
                 if (snap.exists()) {
                     const remoteData = snap.data();
+                    
+                    // Check if healthTip changed externally (Admin update)
+                    if (remoteData.healthTip && remoteData.healthTip !== currentData.healthTip) {
+                        lastAdminUpdateTimestamp = Date.now(); // Mark time
+                        updateTipDisplay(remoteData.healthTip); // Force show admin message
+                    }
+
                     currentData = { ...currentData, ...remoteData };
                     
                     // Check Auto Schedule based on CURRENT rules
@@ -572,7 +625,9 @@
             // Patient View
             els.displayNumber.textContent = number;
             els.statusText.textContent = statusText;
-            els.healthTip.textContent = `“${healthTip}”`;
+            
+            // Note: healthTip rotation is handled by startTipRotation(), 
+            // but we allow updateTipDisplay override if remote data changes.
             
             let badgeClass, borderClass, numClass, iconName;
 
@@ -694,4 +749,3 @@
     </script>
 </body>
 </html>
-
