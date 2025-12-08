@@ -538,6 +538,12 @@
 
             if (diffHours > 2) {
                 console.log("Applying auto-schedule:", scheduled);
+
+                // Auto reset number to 0 if status is 'closed'
+                if (scheduled.statusType === 'closed') {
+                    scheduled.number = 0;
+                }
+
                 await updateDB(scheduled); 
             }
         }
