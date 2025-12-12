@@ -19,6 +19,17 @@
         .fade-text { transition: opacity 0.8s ease-in-out; }
         .opacity-0 { opacity: 0; }
         .opacity-100 { opacity: 1; }
+        
+        body {
+            -webkit-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+        }
+        input, textarea {
+            -webkit-user-select: text;
+            -ms-user-select: text;
+            user-select: text;
+        }
     </style>
 </head>
 <body class="bg-stone-50 min-h-screen text-slate-800">
@@ -85,7 +96,7 @@
                     <h2 class="font-bold text-lg text-slate-700 flex items-center gap-2"><i data-lucide="calendar-clock" class="text-emerald-600"></i> 自動排程規則</h2>
                     <button id="btn-save-settings" class="bg-emerald-600 text-white px-4 py-1.5 rounded-lg text-sm font-bold shadow hover:bg-emerald-700">儲存規則</button>
                 </div>
-                <p class="text-xs text-slate-500 mb-4 bg-yellow-50 p-2 rounded border border-yellow-100"><i data-lucide="info" width="12" class="inline mb-0.5"></i> 系統會在超過 2 小時無人操作後，依此規則自動切換狀態。</p>
+                <p class="text-xs text-slate-500 mb-4 bg-yellow-50 p-2 rounded border border-yellow-100"><i data-lucide="info" width="12" class="inline mb-0.5"></i> 系統會在超過 30 分鐘無人操作後，依此規則自動切換狀態。</p>
                 <div id="schedule-list" class="space-y-3"></div>
                 <div class="mt-8 mb-4"><button id="btn-close-settings" class="w-full py-3 bg-slate-200 text-slate-600 rounded-xl font-bold">關閉設定</button></div>
             </div>
@@ -240,7 +251,13 @@
             scheduleList: document.getElementById('schedule-list')
         };
 
-        // Logic
+        // --- Prevent Right Click & Developer Tools ---
+        document.addEventListener('contextmenu', event => event.preventDefault());
+        document.addEventListener('keydown', function(event) {
+            if (event.key === 'F12' || (event.ctrlKey && event.shiftKey && ['I','J','C'].includes(event.key)) || (event.ctrlKey && event.key === 'u')) event.preventDefault();
+        });
+
+        // Logic: Calculate State
         function getScheduledState(rules) {
             const now = new Date();
             const day = now.getDay(); 
@@ -249,10 +266,10 @@
             const timeVal = h * 60 + m; 
             const rule = rules.find(r => r.day === day);
             if (!rule) return null;
-            if (rule.isClosed) return { statusType: 'closed', statusText: '門診休診中' };
+            if (rule.isClosed) return { statusType: 'closed', statusText: '門診休診中', number: 0 };
             if (rule.autoCloseTime) {
                 const [closeH, closeM] = rule.autoCloseTime.split(':').map(Number);
-                if (timeVal >= closeH * 60 + closeM) return { statusType: 'closed', statusText: '門診休診中' };
+                if (timeVal >= closeH * 60 + closeM) return { statusType: 'closed', statusText: '門診休診中', number: 0 };
             }
             if (rule.waitingSlot && rule.waitingSlot.start && rule.waitingSlot.end) {
                 const [sh, sm] = rule.waitingSlot.start.split(':').map(Number);
@@ -260,6 +277,25 @@
                 if (timeVal >= sh * 60 + sm && timeVal < eh * 60 + em) return { statusType: 'waiting', statusText: '準備看診中' };
             }
             return null;
+        }
+
+        // Logic: Merge DB data with local Schedule logic (Visual Fallback)
+        function getEffectiveData(remoteData) {
+            const scheduled = getScheduledState(activeScheduleRules);
+            if (!scheduled) return remoteData; // No schedule rule active, trust DB
+
+            // If local schedule says "Closed" but DB says "Active"
+            // Check how stale the DB is.
+            const lastUpdate = remoteData.updatedAt ? new Date(remoteData.updatedAt) : new Date(0);
+            const diffHours = (new Date() - lastUpdate) / (1000 * 60 * 60);
+
+            // If DB is stale (> 30 mins) and schedule differs, prefer Schedule (Visual Fallback)
+            if (diffHours > 0.5 && remoteData.statusType !== scheduled.statusType) {
+                // Return a merged object that looks like DB data but with scheduled status
+                return { ...remoteData, ...scheduled };
+            }
+            
+            return remoteData;
         }
 
         function startTipRotation() {
@@ -281,12 +317,9 @@
             renderPresets();
             startTipRotation();
             
-            // Auto sign-in anonymously for patients if no one is logged in
             onAuthStateChanged(auth, (user) => {
                 currentUser = user;
                 if (user) {
-                    // Check if it's likely an admin (email auth) or patient (anonymous)
-                    // Note: This is just for UI routing. Security is handled by Firestore Rules.
                     if (!user.isAnonymous) {
                         isAdmin = true;
                         els.loginModal.classList.add('hidden');
@@ -321,6 +354,7 @@
                 await setDoc(docRef, { schedule: rules }, { merge: true });
                 activeScheduleRules = rules;
                 alert("排程規則已儲存");
+                // Trigger immediate check
                 const scheduled = getScheduledState(activeScheduleRules);
                 if(scheduled) checkAndApplySchedule(currentData, scheduled);
             } catch (e) { console.error("Save Error", e); }
@@ -333,13 +367,21 @@
                 els.app.classList.remove('hidden');
                 if (snap.exists()) {
                     const remoteData = snap.data();
+                    
                     if (remoteData.healthTip && remoteData.healthTip !== currentData.healthTip) {
                         lastAdminUpdateTimestamp = Date.now();
                         updateTipDisplay(remoteData.healthTip);
                     }
-                    currentData = { ...currentData, ...remoteData };
+
+                    // 1. Try to update DB if Admin is present and schedule requires it
                     const scheduled = getScheduledState(activeScheduleRules);
-                    if(scheduled) checkAndApplySchedule(remoteData, scheduled);
+                    if(isAdmin && scheduled) checkAndApplySchedule(remoteData, scheduled);
+
+                    // 2. Calculate Effective Data for Display (Visual Fallback)
+                    // This ensures patients see "Closed" if DB is stale, even if write failed
+                    const effectiveData = getEffectiveData(remoteData);
+                    currentData = { ...currentData, ...effectiveData };
+                    
                     renderUI();
                 } else { if(isAdmin) setDoc(docRef, currentData); }
             }, (err) => console.error("Snapshot error", err));
@@ -347,10 +389,13 @@
 
         async function checkAndApplySchedule(data, scheduled) {
             if (data.statusType === scheduled.statusType) return;
+            
             const lastUpdate = data.updatedAt ? new Date(data.updatedAt) : new Date(0);
             const diffHours = (new Date() - lastUpdate) / (1000 * 60 * 60);
-            if (diffHours > 2) {
-                console.log("Applying auto-schedule:", scheduled);
+            
+            // Reduced buffer to 30 mins (0.5 hours)
+            if (diffHours > 0.5) {
+                console.log("Applying auto-schedule update...");
                 if (scheduled.statusType === 'closed') scheduled.number = 0;
                 await updateDB(scheduled); 
             }
@@ -437,7 +482,6 @@
         }
 
         async function updateDB(updates) {
-            // Check auth state before writing (though rules will also enforce this)
             if (!currentUser || currentUser.isAnonymous) {
                 console.error("Not authorized to update");
                 return;
@@ -454,7 +498,6 @@
         els.btnCloseSettings.onclick = () => els.settingsPanel.classList.add('hidden');
         els.btnSaveSettings.onclick = () => saveSettingsToDB(activeScheduleRules);
         
-        // Open Login Modal
         document.getElementById('btn-open-login').onclick = () => { 
             els.loginModal.classList.remove('hidden'); 
             els.inputEmail.value = ''; 
@@ -463,23 +506,19 @@
         };
         document.getElementById('btn-cancel-login').onclick = () => els.loginModal.classList.add('hidden');
         
-        // Confirm Login (Email/Password)
         document.getElementById('btn-confirm-login').onclick = async () => {
             const email = els.inputEmail.value;
             const password = els.inputPassword.value;
             try {
                 await signInWithEmailAndPassword(auth, email, password);
-                // Auth state listener will handle the UI switch
             } catch (error) {
                 console.error(error);
                 els.loginError.classList.remove('hidden');
             }
         };
 
-        // Logout
         document.getElementById('btn-logout').onclick = async () => { 
             await signOut(auth);
-            // Sign in as anonymous user again for patient view
             await signInAnonymously(auth);
         };
 
